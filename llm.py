@@ -91,7 +91,7 @@ def extract_output_text(data: dict) -> str:
     instead of silently returning garbage.
     """
     if isinstance(data.get("output_text"), str):
-        return data["output_text"]
+        return data["output_text"].strip()
 
     output = data.get("output")
     if isinstance(output, list):
@@ -101,12 +101,12 @@ def extract_output_text(data: dict) -> str:
                 if content.get("type") in ("output_text", "text") and content.get("text"):
                     chunks.append(content["text"])
         if chunks:
-            return "\n".join(chunks)
+            return "\n".join(chunks).strip()
 
     if isinstance(data.get("response"), str):
-        return data["response"]
+        return data["response"].strip()
 
     if isinstance(data.get("text"), str):
-        return data["text"]
+        return data["text"].strip()
 
     raise ValueError(f"Unrecognized response shape from LLM: {data}")
