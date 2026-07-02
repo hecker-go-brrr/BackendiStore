@@ -1,39 +1,3 @@
-"""
-commerce.py
------------
-Matches a visitor's message against product data that the SalesIQ Zobot
-already fetched from Zoho Commerce (via the "istore" Connection, using
-GET https://commerce.zoho.com/store/api/v1/products) and passed along in
-the /chat request as `product_data`.
-
-This module never calls Zoho itself — it can't; SalesIQ Connections only
-work inside Deluge. It just matches and formats.
-
-MATCHING APPROACH — hybrid: fast local scoring pre-filters a shortlist, then
-an LLM makes the final call within that shortlist.
-
-Why hybrid rather than pure fuzzy matching OR pure LLM:
-  - Pure fuzzy string matching (the previous approach) has a real ceiling —
-    it can't handle typos combined with indirect phrasing, mixed-language
-    queries, or genuine semantic ambiguity between similarly-worded titles.
-    It was reported as "still rather poor" even after the word-overlap fix.
-  - Pure LLM matching against the FULL catalog (~1000 products) isn't
-    practical — that's 10-20K+ tokens of product names on every single
-    query, which is slow and expensive for no real benefit once the list
-    is that long.
-  - So: local word-overlap-gated scoring (cheap, fast, already proven at
-    1000-item scale) narrows the field to a shortlist of ~12 plausible
-    candidates, cheaply rejecting true non-matches ("harry potter" against
-    a Vedanta catalog) without ever calling the LLM. The LLM then only has
-    to choose among ~12 real candidates — a much easier, cheaper, and more
-    reliable task than either free-text search or full-catalog matching.
-
-RELIABILITY: if the LLM disambiguation call fails for any reason (provider
-down, timeout, unparseable response), handle_commerce_query() falls back to
-the previous pure-local decision logic automatically — same pattern as
-router.py's classifier. A degraded-but-working match beats a broken one.
-"""
-
 from typing import Optional
 import os
 import re
@@ -51,15 +15,11 @@ _STOPWORDS = {
     "will", "want", "looking", "get", "got", "any", "some",
 }
 
-# Two words count as "the same" if they're identical, OR near-identical
-# (catches minor typos/spelling variants like "vivekanand" vs "vivekananda")
 _WORD_TYPO_THRESHOLD = 82
-
 
 def _tokenize(text: str) -> list:
     words = re.findall(r"[a-z0-9]+", text.lower())
     return [w for w in words if w not in _STOPWORDS and len(w) >= 2]
-
 
 def _shared_word_count(query_words: list, name_words: list) -> int:
     """How many query words have a real match (exact or near-exact) among
@@ -77,7 +37,6 @@ def _shared_word_count(query_words: list, name_words: list) -> int:
                 break
     return shared
 
-
 def _score(query: str, name: str) -> float:
     q_words = _tokenize(query)
     n_words = _tokenize(name)
@@ -89,12 +48,8 @@ def _score(query: str, name: str) -> float:
     if shared == 0:
         return 0.0  # hard gate — no real shared content, no match, period
 
-    # Overlap ratio normalized by the SHORTER side so a short query ("gita")
-    # matching a subset of a long formal title still scores well.
-    overlap_ratio = shared / min(len(set(q_words)), len(set(n_words)))
+  overlap_ratio = shared / min(len(set(q_words)), len(set(n_words)))
 
-    # Fuzzy score within the already-filtered candidates, to distinguish a
-    # near-exact match from a loose one that only shares one common word.
     q_clean, n_clean = " ".join(q_words), " ".join(n_words)
     fuzzy = max(fuzz.WRatio(q_clean, n_clean), fuzz.partial_ratio(q_clean, n_clean))
 
@@ -118,12 +73,12 @@ def _rank_candidates(message: str, product_data: list) -> list:
     return scored
 
 
-NO_MATCH_THRESHOLD = 35       # below this, nothing in the catalog is a real match
-SINGLE_MATCH_THRESHOLD = 55   # at/above this + a clear gap = confident single item
-SINGLE_MATCH_GAP = 15         # how far ahead of the runner-up counts as "clearly the one"
-LIST_THRESHOLD = 35           # anything at/above this (but no clear winner) is worth listing
+NO_MATCH_THRESHOLD = 35       
+SINGLE_MATCH_THRESHOLD = 55   
+SINGLE_MATCH_GAP = 15         
+LIST_THRESHOLD = 35           
 MAX_LIST_ITEMS = 3
-LLM_SHORTLIST_SIZE = 12       # how many local candidates get handed to the LLM for final judgment
+LLM_SHORTLIST_SIZE = 12       
 
 
 def debug_match(message: str, product_data: list, top_n: int = 10) -> list:
