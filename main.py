@@ -44,6 +44,7 @@ class ChatRequest(BaseModel):
 
 class DebugRequest(BaseModel):
     message: str
+    provider: Optional[str] = None  # "local" or "azure" — overrides LLM_PROVIDER for this one call
 
 
 @app.get("/health")
@@ -76,10 +77,13 @@ async def chat(payload: ChatRequest):
 
 @app.post("/debug/raw-llm", dependencies=[Depends(verify_secret)])
 async def debug_raw_llm(payload: DebugRequest):
-    """Hit this once via curl/Postman/browser after deploying, to see the
-    exact JSON the local LLM returns, before trusting llm.py's parsing."""
+    """Hit this after deploying to see the exact JSON a provider returns,
+    before trusting llm.py's parsing. Pass {"provider": "azure"} or
+    {"provider": "local"} to test either one regardless of which is
+    currently set as LLM_PROVIDER on Render."""
+    active_provider = (payload.provider or llm.LLM_PROVIDER).lower()
     try:
-        raw = await llm.ask_llm_raw(payload.message)
+        raw = await llm.ask_llm_raw(payload.message, provider=payload.provider)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return raw
+        raise HTTPException(status_code=502, detail=f"[{active_provider}] {exc}") from exc
+    return {"provider_used": active_provider, "raw_response": raw}
