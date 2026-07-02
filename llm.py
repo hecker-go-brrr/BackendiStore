@@ -1,29 +1,3 @@
-"""
-llm.py
-------
-Two interchangeable LLM providers, switched via the LLM_PROVIDER env var
-(set on Render — no code change needed to switch):
-
-  LLM_PROVIDER=local  (default) -> the tunneled local Qwen model
-                                    (https://rkmmai-33.localcan.dev/v1/responses)
-  LLM_PROVIDER=azure           -> Azure OpenAI's Responses API
-                                    (https://admin-mnowkbwk-southindia.cognitiveservices.azure.com/openai/responses)
-
-Both providers speak a Responses-API-style shape (input in, output[] with
-output_text back), so extract_output_text() is shared between them. Azure's
-exact response shape for this specific deployment hasn't been confirmed yet
-(unlike the local one, which was confirmed via /debug/raw-llm earlier in this
-project) — extract_output_text() also now handles the Chat Completions shape
-(choices[].message.content) as a fallback, in case this Azure deployment
-actually responds that way instead. Test with /debug/raw-llm before trusting
-it in production, the same way the local provider was verified.
-
-IMPORTANT auth difference: Azure uses an `api-key` header, NOT
-`Authorization: Bearer` like the local provider. Getting this wrong produces
-a 401, not a helpful error — this is coded correctly below, but worth knowing
-if you ever touch this by hand.
-"""
-
 import os
 import httpx
 
