@@ -174,12 +174,31 @@ async def handle_commerce_query(message: str, product_data: Optional[list] = Non
     return "Here are a few things that might match what you're looking for:\n" + "\n".join(lines)
 
 
+import os
+
+STOREFRONT_BASE_URL = os.environ.get("STOREFRONT_BASE_URL", "").rstrip("/")
+
+
 def _format_price(value) -> str:
     try:
         v = float(value)
     except (TypeError, ValueError):
         return str(value)
     return str(int(v)) if v == int(v) else f"{v:g}"
+
+
+def _product_link(product: dict) -> str:
+    """Builds the real storefront product page URL from the product's
+    'url' (a slug, not a full link) and 'product_id'. Returns "" if
+    STOREFRONT_BASE_URL isn't configured or either field is missing —
+    never guesses at a link that might be wrong."""
+    if not STOREFRONT_BASE_URL:
+        return ""
+    slug = product.get("url")
+    product_id = product.get("product_id")
+    if not slug or not product_id:
+        return ""
+    return f"{STOREFRONT_BASE_URL}/products/{slug}/{product_id}"
 
 
 def format_product_summary(product: dict) -> str:
@@ -208,5 +227,7 @@ def format_product_summary(product: dict) -> str:
         else:
             price_text = f", priced at ₹{_format_price(min_rate)}"
 
-    return f"{name}: {stock_text}{price_text}."
+    link = _product_link(product)
+    link_text = f" {link}" if link else ""
 
+    return f"{name}: {stock_text}{price_text}.{link_text}"
