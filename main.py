@@ -47,6 +47,11 @@ class DebugRequest(BaseModel):
     provider: Optional[str] = None  # "local" or "azure" — overrides LLM_PROVIDER for this one call
 
 
+class DebugCommerceRequest(BaseModel):
+    message: str
+    product_data: list
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -87,3 +92,15 @@ async def debug_raw_llm(payload: DebugRequest):
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"[{active_provider}] {exc}") from exc
     return {"provider_used": active_provider, "raw_response": raw}
+
+
+@app.post("/debug/commerce-match", dependencies=[Depends(verify_secret)])
+async def debug_commerce_match(payload: DebugCommerceRequest):
+    """Test product matching against REAL catalog data without going
+    through /chat's final formatted reply. Pass a real message plus the
+    actual product_data your Zobot fetches (e.g. paste in the trimmed
+    products from a Deluge log or a fresh Commerce fetch). Returns the top
+    10 scored candidates with raw scores, so mismatches can be diagnosed
+    precisely instead of guessing at what the fuzzy matcher is doing."""
+    ranked = commerce.debug_match(payload.message, payload.product_data)
+    return {"query": payload.message, "top_matches": ranked}
