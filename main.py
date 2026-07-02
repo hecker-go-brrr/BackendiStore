@@ -62,9 +62,8 @@ async def chat(payload: ChatRequest):
     if not payload.message or not payload.message.strip():
         return {"reply": "Could you tell me a bit more about what you're looking for?"}
 
-    intent = router.classify(payload.message)
-
     try:
+        intent = await router.classify(payload.message)
         if intent == "commerce":
             reply = await commerce.handle_commerce_query(payload.message, payload.product_data)
         else:
