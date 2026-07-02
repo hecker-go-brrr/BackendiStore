@@ -48,7 +48,7 @@ def _score(query: str, name: str) -> float:
     if shared == 0:
         return 0.0  # hard gate — no real shared content, no match, period
 
-  overlap_ratio = shared / min(len(set(q_words)), len(set(n_words)))
+    overlap_ratio = shared / min(len(set(q_words)), len(set(n_words)))
 
     q_clean, n_clean = " ".join(q_words), " ".join(n_words)
     fuzzy = max(fuzz.WRatio(q_clean, n_clean), fuzz.partial_ratio(q_clean, n_clean))
