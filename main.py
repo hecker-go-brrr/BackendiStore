@@ -6,10 +6,17 @@ FastAPI backend for the Chennai Math iStore assistant.
 Endpoints:
   POST /chat            <- called by the SalesIQ Zobot Message Handler
   GET  /health           <- for Render's health checks
+  GET  /version           <- confirms exactly what's deployed. BUMP APP_VERSION
+                             every time you push. Check this FIRST whenever
+                             something behaves unexpectedly — "is the new code
+                             actually live" has been the real cause behind
+                             multiple debugging sessions in this project that
+                             looked like application bugs at first.
   POST /debug/raw-llm    <- returns the LLM's raw, unprocessed JSON so you
                              can confirm its response shape before relying
-                             on llm.py's parsing. Remove or protect this
-                             before going fully live.
+                             on llm.py's parsing.
+  POST /debug/commerce-match <- test product matching against real catalog
+                             data directly, without going through /chat.
 """
 
 from fastapi import FastAPI, HTTPException, Header, Depends
@@ -22,6 +29,11 @@ import llm
 import commerce
 
 app = FastAPI(title="Chennai Math iStore Assistant")
+
+# Bump this string every time you push new code. /version reports it back
+# unauthenticated, so you can always confirm what's actually live with a
+# plain GET request — no guessing from indirect symptoms.
+APP_VERSION = "2026-07-02-llm-router-v1"
 
 # Shared-secret check: your Zobot sends this header on every call, so random
 # internet traffic hitting your public Render URL can't rack up LLM/Commerce
@@ -55,6 +67,15 @@ class DebugCommerceRequest(BaseModel):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/version")
+async def version():
+    return {
+        "app_version": APP_VERSION,
+        "llm_provider": llm.LLM_PROVIDER,
+        "backend_secret_enforced": bool(BACKEND_SHARED_SECRET),
+    }
 
 
 @app.post("/chat", dependencies=[Depends(verify_secret)])
