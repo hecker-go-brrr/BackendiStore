@@ -1,28 +1,34 @@
 """
 llm.py
 ------
-Talks to the locally-hosted Qwen model via its tunneled endpoint
-(e.g. https://rkmmai-33.localcan.dev/v1/responses).
+Two interchangeable LLM providers, switched via the LLM_PROVIDER env var
+(set on Render — no code change needed to switch):
 
-This is a *custom* Responses-API-style endpoint, not the stock
-OpenAI /v1/chat/completions shape. We don't yet know the exact JSON
-shape of a successful response, so extract_output_text() tries a few
-common shapes defensively and raises a clear error if none match.
+  LLM_PROVIDER=local  (default) -> the tunneled local Qwen model
+                                    (https://rkmmai-33.localcan.dev/v1/responses)
+  LLM_PROVIDER=azure           -> Azure OpenAI's Responses API
+                                    (https://admin-mnowkbwk-southindia.cognitiveservices.azure.com/openai/responses)
 
-Once you test /debug/raw-llm (see main.py) and see the real JSON,
-tell Claude the shape and this function gets locked down precisely.
+Both providers speak a Responses-API-style shape (input in, output[] with
+output_text back), so extract_output_text() is shared between them. Azure's
+exact response shape for this specific deployment hasn't been confirmed yet
+(unlike the local one, which was confirmed via /debug/raw-llm earlier in this
+project) — extract_output_text() also now handles the Chat Completions shape
+(choices[].message.content) as a fallback, in case this Azure deployment
+actually responds that way instead. Test with /debug/raw-llm before trusting
+it in production, the same way the local provider was verified.
+
+IMPORTANT auth difference: Azure uses an `api-key` header, NOT
+`Authorization: Bearer` like the local provider. Getting this wrong produces
+a 401, not a helpful error — this is coded correctly below, but worth knowing
+if you ever touch this by hand.
 """
 
 import os
 import httpx
 
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "https://rkmmai-33.localcan.dev").rstrip("/")
-LLM_API_KEY = os.environ["LLM_API_KEY"]  # set this in Render's environment variables, never hardcode
-LLM_MODEL = os.environ.get("LLM_MODEL", "qwen3.6-35b-a3b-nvfp4")
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "local").lower()  # "local" or "azure"
 
-# Keep reasoning effort modest by default — SalesIQ's invokeUrl task has a
-# hard 40-second timeout per call, and the whole message handler has a
-# 90-second budget. "high" effort risks timing out inside SalesIQ.
 DEFAULT_REASONING_EFFORT = os.environ.get("LLM_REASONING_EFFORT", "low")
 
 SYSTEM_PROMPT = (
@@ -34,61 +40,105 @@ SYSTEM_PROMPT = (
     "a number."
 )
 
+# ---- Local (tunneled Qwen) provider config ----
+LOCAL_BASE_URL = os.environ.get("LLM_BASE_URL", "https://rkmmai-33.localcan.dev").rstrip("/")
+LOCAL_API_KEY = os.environ.get("LLM_API_KEY")
+LOCAL_MODEL = os.environ.get("LLM_MODEL", "qwen3.6-35b-a3b-nvfp4")
+
+# ---- Azure OpenAI provider config ----
+AZURE_ENDPOINT = os.environ.get(
+    "AZURE_LLM_ENDPOINT", "https://admin-mnowkbwk-southindia.cognitiveservices.azure.com"
+).rstrip("/")
+AZURE_API_KEY = os.environ.get("AZURE_LLM_API_KEY")
+AZURE_DEPLOYMENT = os.environ.get("AZURE_LLM_DEPLOYMENT", "gpt-5.4-nano-for-salesiq")
+AZURE_API_VERSION = os.environ.get("AZURE_LLM_API_VERSION", "2025-04-01-preview")
+
 
 async def ask_llm(
     user_message: str,
     system_prompt: str = SYSTEM_PROMPT,
     reasoning_effort: str = DEFAULT_REASONING_EFFORT,
+    provider: str = None,
 ) -> str:
+    data = await _call_provider(user_message, system_prompt, reasoning_effort, provider)
+    return extract_output_text(data)
+
+
+async def ask_llm_raw(user_message: str, reasoning_effort: str = "low", provider: str = None) -> dict:
+    """Used by /debug/raw-llm so you can see the exact JSON shape a provider
+    returns, unprocessed — pass provider="azure" or provider="local" to test
+    either one regardless of which is set as the active LLM_PROVIDER."""
+    return await _call_provider(user_message, SYSTEM_PROMPT, reasoning_effort, provider)
+
+
+async def _call_provider(user_message: str, system_prompt: str, reasoning_effort: str, provider: str = None) -> dict:
+    active = (provider or LLM_PROVIDER).lower()
+    if active == "azure":
+        return await _call_azure(user_message, system_prompt)
+    if active == "local":
+        return await _call_local(user_message, system_prompt, reasoning_effort)
+    raise ValueError(f"Unknown LLM provider {active!r} — expected 'local' or 'azure'.")
+
+
+async def _call_local(user_message: str, system_prompt: str, reasoning_effort: str) -> dict:
+    if not LOCAL_API_KEY:
+        raise RuntimeError("LLM_API_KEY is not set — required for the 'local' provider.")
+
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "Authorization": f"Bearer {LOCAL_API_KEY}",
     }
     payload = {
-        "model": LLM_MODEL,
+        "model": LOCAL_MODEL,
         "system_prompt": system_prompt,
         "input": user_message,
         "reasoning": {"effort": reasoning_effort},
     }
 
     async with httpx.AsyncClient(timeout=35) as client:
-        resp = await client.post(f"{LLM_BASE_URL}/v1/responses", headers=headers, json=payload)
+        resp = await client.post(f"{LOCAL_BASE_URL}/v1/responses", headers=headers, json=payload)
         resp.raise_for_status()
-        data = resp.json()
-
-    return extract_output_text(data)
+        return resp.json()
 
 
-async def ask_llm_raw(user_message: str, reasoning_effort: str = "low") -> dict:
-    """Used only by the /debug/raw-llm endpoint so you can see the exact
-    JSON shape the model returns, unprocessed."""
+async def _call_azure(user_message: str, system_prompt: str) -> dict:
+    if not AZURE_API_KEY:
+        raise RuntimeError("AZURE_LLM_API_KEY is not set — required for the 'azure' provider.")
+
+    # Azure uses an `api-key` header, not `Authorization: Bearer` — different
+    # from the local provider. Easy to get wrong, coded explicitly here.
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {LLM_API_KEY}",
+        "api-key": AZURE_API_KEY,
     }
     payload = {
-        "model": LLM_MODEL,
-        "system_prompt": SYSTEM_PROMPT,
+        "model": AZURE_DEPLOYMENT,
         "input": user_message,
-        "reasoning": {"effort": reasoning_effort},
+        "instructions": system_prompt,
     }
+    url = f"{AZURE_ENDPOINT}/openai/responses?api-version={AZURE_API_VERSION}"
+
     async with httpx.AsyncClient(timeout=35) as client:
-        resp = await client.post(f"{LLM_BASE_URL}/v1/responses", headers=headers, json=payload)
+        resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
         return resp.json()
 
 
 def extract_output_text(data: dict) -> str:
-    """Best-effort parsing across a few plausible Responses-API shapes.
+    """Best-effort parsing across plausible response shapes from either
+    provider.
 
-    Known shapes this handles:
-      1. {"output_text": "..."}                                   (OpenAI Responses API convenience field)
-      2. {"output": [{"content": [{"type": "output_text"/"text", "text": "..."}]}]}
-      3. {"response": "..."}
-      4. {"text": "..."}
+    Confirmed working (tested earlier in this project):
+      - Local provider: {"output": [{"type": "reasoning", ...}, {"type": "message", "content": [{"type": "output_text", "text": "..."}]}]}
+
+    Handled defensively, not yet confirmed against a real response:
+      - {"output_text": "..."}                     (OpenAI Responses API convenience field)
+      - {"choices": [{"message": {"content": "..."}}]}   (Chat Completions shape —
+        in case the Azure deployment responds this way instead of Responses-API style)
+      - {"response": "..."} / {"text": "..."}
 
     If none match, raises with the raw payload so the error is debuggable
-    instead of silently returning garbage.
+    instead of silently returning garbage — test with /debug/raw-llm first.
     """
     if isinstance(data.get("output_text"), str):
         return data["output_text"].strip()
@@ -102,6 +152,12 @@ def extract_output_text(data: dict) -> str:
                     chunks.append(content["text"])
         if chunks:
             return "\n".join(chunks).strip()
+
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        message = choices[0].get("message", {})
+        if isinstance(message.get("content"), str):
+            return message["content"].strip()
 
     if isinstance(data.get("response"), str):
         return data["response"].strip()
